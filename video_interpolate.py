@@ -65,7 +65,7 @@ for video_path in tqdm(video_files, desc="전체 영상 처리 중"):
         interpolated_frames.append(interp_frame)
 
     # 영상 저장
-    save_path = os.path.join(output_dir, f"{video_name}_interp_30fps.mp4")
+    save_path = os.path.join(output_dir, f"{video_name}.mp4")
     out = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), 30.0, (w, h))
     for frame in interpolated_frames:
         out.write(frame)
