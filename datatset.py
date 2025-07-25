@@ -174,7 +174,6 @@ class DROZY_EAR_Dataset(Dataset):
             ear_tensor = self.augment_landmark(ear_tensor)
 
         return ear_tensor, kss_label_tensor
-
 class DROZY_EYELANDMARK_Dataset(Dataset):
     def __init__(self, split_dir, mode='train', augment=False):
         self.split_dir = split_dir
@@ -239,6 +238,15 @@ class DROZY_EYELANDMARK_Dataset(Dataset):
 
         landmark_cols = [col for col in df.columns if "landmark_" in col]
         landmark_array = np.array(df[landmark_cols].values, dtype=np.float32)
+        ######### 학 체크
+        if landmark_array.size == 0:
+            print(f'size problem임요 쉬봉털{sample_path}')
+        if np.isnan(landmark_array).any():
+            print(f'nan problem임요 쉬봉털{sample_path}')
+        if np.isinf(landmark_array).any():
+            print(f'inf problem임요 쉬봉털{sample_path}')
+        ######### 학 체크
+
         # 신호 정규화: 각 랜드마크별로 평균 0, 표준편차 1로 정규화
         # shape: (seq_len, n_landmarks)
         mean = landmark_array.mean(axis=0, keepdims=True)
@@ -254,10 +262,68 @@ class DROZY_EYELANDMARK_Dataset(Dataset):
         if self.augment:
             landmark_tensor = self.augment_landmark(landmark_tensor)
 
-        return landmark_tensor, kss_label_tensor
+        return landmark_tensor, kss_label_tensor, sample_path
+
+class DROZY_FACE_Dataset(Dataset):
+    def __init__(self, split_dir, mode='train', transform=None):
+        self.split_dir = split_dir
+        self.sample_path = glob.glob(os.path.join(split_dir, f"*/*.npy"))
+        self.kss_path = "./DROZY/KSS.txt"
+        self.kss_dict = {}
+        self.mode = mode
+        self.transform = transform
+
+        key_list = []
+        for i in range(1, 15):
+            for j in range(1, 4):
+                key_list.append(f"{i}-{j}")
+
+        with open(self.kss_path, 'r') as f:
+            kss_values = []
+            for line in f:
+                kss_values.extend(line.strip().split())
+
+        # KSS 값을 1~3은 0, 4~6은 1, 7~9는 2로 치환
+        def map_kss_value(val):
+            v = int(val)
+            if 1 <= v <= 3:
+                return 0
+            elif 4 <= v <= 6:
+                return 1
+            else:
+                return 2
+
+        for idx, key in enumerate(key_list):
+            self.kss_dict[key] = map_kss_value(kss_values[idx])
+
+    def __len__(self):
+        return len(self.sample_path)
+
+    def __getitem__(self, idx):
+        sample_path = self.sample_path[idx]
+        sample_idx = sample_path.split("\\")[1].replace("_crop", "")
+
+        kss_label = self.kss_dict[sample_idx]
+
+        # npy 파일에서 데이터 로드
+        # sample_path는 (frame, width, height) 형태의 데이터를 가짐
+        frame_array = np.load(sample_path)  # shape: (frame, width, height)
+
+        # 신호 정규화: 각 픽셀별로 평균 0, 표준편차 1로 정규화
+        # 모든 프레임의 평균 얼굴만 사용
+        mean_face = frame_array.mean(axis=0)  # shape: (width, height))
+
+        frame_tensor = torch.tensor(mean_face, dtype=torch.float32)
+        kss_label_tensor = torch.tensor(kss_label, dtype=torch.long)
+
+        if self.transform:
+            # 2D 텐서를 3D로 변환 (H, W) -> (C, H, W)
+            if frame_tensor.dim() == 2:
+                frame_tensor = frame_tensor.unsqueeze(0)  # (1, H, W)
+            frame_tensor = self.transform(frame_tensor)
+
+        return frame_tensor, kss_label_tensor, sample_path
 
 if __name__ == "__main__":
-    dataset = DROZY_EYELANDMARK_Dataset(split_dir="G:/DROZY_signals/split_eye_landmark/train")
-    print(len(dataset))
-    print(dataset[0])
+    dataset = DROZY_FACE_Dataset(split_dir="./output_npy/train")
     print(dataset[0][0].shape)
