@@ -5,6 +5,7 @@ import os
 import glob
 import numpy as np
 import pandas as pd
+import random
 
 class DROZY_RRSP_Dataset(Dataset):
     def __init__(self, split_dir, mode='train'):
@@ -174,7 +175,6 @@ class DROZY_EAR_Dataset(Dataset):
             ear_tensor = self.augment_landmark(ear_tensor)
 
         return ear_tensor, kss_label_tensor
-
 class DROZY_EYELANDMARK_Dataset(Dataset):
     def __init__(self, split_dir, mode='train', augment=False):
         self.split_dir = split_dir
@@ -231,7 +231,7 @@ class DROZY_EYELANDMARK_Dataset(Dataset):
 
     def __getitem__(self, idx):
         sample_path = self.sample_path[idx]
-        sample_idx = sample_path.split("\\")[1]
+        sample_idx = sample_path.split("\\")[1].replace("_interp_30fps", "")
 
         kss_label = self.kss_dict[sample_idx]
 
@@ -239,6 +239,15 @@ class DROZY_EYELANDMARK_Dataset(Dataset):
 
         landmark_cols = [col for col in df.columns if "landmark_" in col]
         landmark_array = np.array(df[landmark_cols].values, dtype=np.float32)
+        ######### 학 체크
+        if landmark_array.size == 0:
+            print(f'size problem임요 쉬봉털{sample_path}')
+        if np.isnan(landmark_array).any():
+            print(f'nan problem임요 쉬봉털{sample_path}')
+        if np.isinf(landmark_array).any():
+            print(f'inf problem임요 쉬봉털{sample_path}')
+        ######### 학 체크
+
         # 신호 정규화: 각 랜드마크별로 평균 0, 표준편차 1로 정규화
         # shape: (seq_len, n_landmarks)
         mean = landmark_array.mean(axis=0, keepdims=True)
@@ -254,10 +263,99 @@ class DROZY_EYELANDMARK_Dataset(Dataset):
         if self.augment:
             landmark_tensor = self.augment_landmark(landmark_tensor)
 
-        return landmark_tensor, kss_label_tensor
+        return landmark_tensor, kss_label_tensor, sample_path
+
+class DROZY_FACE_Dataset(Dataset):
+    def __init__(self, split_dir, mode='train', transform=None):
+        self.split_dir = split_dir
+        self.sample_path = glob.glob(os.path.join(split_dir, f"*/*.npy"))
+        self.kss_path = "./DROZY/KSS.txt"
+        self.kss_dict = {}
+        self.mode = mode
+        self.transform = transform
+
+        # (1) key_list 생성 (1-1 ~ 14-3)
+        key_list = [f"{i}-{j}" for i in range(1, 15) for j in range(1, 4)]
+
+        # (2) KSS 값 불러오기 및 매핑
+        with open(self.kss_path, 'r') as f:
+            kss_values = []
+            for line in f:
+                kss_values.extend(line.strip().split())
+
+        def map_kss_value(val):
+            v = int(val)
+            if 1 <= v <= 3:
+                return 0
+            elif 4 <= v <= 6:
+                return 1
+            else:
+                return 2
+            
+
+        for idx, key in enumerate(key_list):
+            self.kss_dict[key] = map_kss_value(kss_values[idx])
+
+    def __len__(self):
+        return len(self.sample_path)
+
+        # 시퀀스 단위 동일 증강
+    def apply_seq_transform(self, frames, transform):
+        seed = np.random.randint(99999)
+        out = []
+        for img in frames:
+            random.seed(seed)
+            out.append(transform(img))
+        return torch.stack(out)
+
+    def __getitem__(self, idx):
+        sample_path = self.sample_path[idx]
+
+        # (3) 운영체제에 독립적인 방식으로 sample_idx 추출
+        sample_idx = os.path.basename(os.path.dirname(sample_path)).replace("_crop", "").replace("_interp_30fps", "")
+        kss_label = self.kss_dict[sample_idx]
+
+        # (4) npy 파일 로드: shape = (frame, 1, H, W)
+        frame_array = np.load(sample_path)
+
+        # frame_array의 shape이 (frame, 1, H, W)이므로, (frame, H, W)로 변환 후 리스트로 만듦
+        if frame_array.ndim == 4 and frame_array.shape[1] == 1:
+            frame_list = [frame.squeeze(0) for frame in frame_array]  # (1, H, W) -> (H, W)
+        else:
+            frame_list = [frame for frame in frame_array]
+
+        # albumentations는 images에 numpy array 리스트를 기대함
+        if self.transform is not None:
+            transformed = self.transform(images=frame_list)
+            frame_array = np.stack(transformed['images'])
+        else:
+            print(f'frame_array shape: {frame_array.shape}')
+            frame_array = np.stack(frame_list)
+
+        # (5) (frame, 1, H, W) → (frame, H, W)
+        if frame_array.ndim == 4 and frame_array.shape[1] == 1:
+            frame_array = frame_array.squeeze(1)
+        
+        # (frame, H, W) -> (frame, 1, H, W) -> float32 tensor
+        frame_tensor = torch.tensor(frame_array, dtype=torch.float32).unsqueeze(1)  # (frame, 1, H, W)
+
+        kss_label_tensor = torch.tensor(kss_label, dtype=torch.long)
+
+        return frame_tensor, kss_label_tensor, sample_path
 
 if __name__ == "__main__":
-    dataset = DROZY_EYELANDMARK_Dataset(split_dir="G:/DROZY_signals/split_eye_landmark/train")
+    import albumentations as A
+    transform_video_seg = A.Compose([
+        A.HorizontalFlip(p=0.5),
+        A.RandomBrightnessContrast(p=0.5),
+        A.RandomRotate90(p=0.5),
+    ])
+    dataset = DROZY_FACE_Dataset(split_dir="./DROZY/gaeMuRan/face_cropped_videos_npy_112/train", transform=transform_video_seg)
     print(len(dataset))
-    print(dataset[0])
     print(dataset[0][0].shape)
+    # dataset[0][0]의 nan 값 검사
+    import torch
+
+    frame_tensor = dataset[0][0]
+    nan_count = torch.isnan(frame_tensor).sum().item()
+    print(f"frame_tensor 내 nan 값 개수: {nan_count}")
